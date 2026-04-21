@@ -209,27 +209,46 @@ int main(){
                 // Output scoreboard before scrolling (with frozen view)
                 output_scoreboard(S);
 
-                // Prepare ranking order for change detection
                 auto current_order = order_by_rank(S);
+                int n = (int)current_order.size();
+                vector<int> pos_of_team(n);
+                for(int i=0;i<n;i++) pos_of_team[current_order[i]] = i;
 
-                // Unfreeze until no frozen problems remain
-                while(true){
-                    // Pick lowest-ranked team with any frozen problems (has events)
-                    int chosen_team = -1, chosen_prob = -1;
-                    for(int i=(int)current_order.size()-1; i>=0; --i){
-                        int ti = current_order[i];
-                        for(int p=0;p<S.M;p++){
-                            auto &ps = S.teams[ti].probs[p];
-                            if(ps.is_frozen && !ps.frozen_events.empty()){
-                                chosen_team = ti; chosen_prob = p; break;
-                            }
-                        }
-                        if(chosen_team!=-1) break;
+                auto has_frozen = [&](int ti)->bool{
+                    const auto &t = S.teams[ti];
+                    for(int p=0;p<S.M;p++){
+                        const auto &ps = t.probs[p];
+                        if(ps.is_frozen && !ps.frozen_events.empty()) return true;
                     }
-                    if(chosen_team==-1) break; // done
+                    return false;
+                };
+                auto first_frozen_prob = [&](int ti)->int{
+                    const auto &t = S.teams[ti];
+                    for(int p=0;p<S.M;p++){
+                        const auto &ps = t.probs[p];
+                        if(ps.is_frozen && !ps.frozen_events.empty()) return p;
+                    }
+                    return -1;
+                };
 
-                    // Position before unfreeze
-                    int old_pos = find(current_order.begin(), current_order.end(), chosen_team) - current_order.begin();
+                // set of teams with frozen problems, keyed by current position (largest pos first)
+                struct Node{int pos, idx;};
+                struct Cmp{bool operator()(const Node&a,const Node&b)const{ if(a.pos!=b.pos) return a.pos<b.pos; return a.idx<b.idx; }};
+                std::set<Node,Cmp> frozen_set;
+                vector<char> in_set(n, 0);
+                for(int i=0;i<n;i++) if(has_frozen(i)){ frozen_set.insert({pos_of_team[i], i}); in_set[i]=1; }
+
+                while(!frozen_set.empty()){
+                    // pick lowest-ranked (max pos)
+                    auto it = prev(frozen_set.end());
+                    int chosen_team = it->idx;
+                    frozen_set.erase(it); in_set[chosen_team]=0;
+                    int chosen_prob = first_frozen_prob(chosen_team);
+                    if(chosen_prob==-1){
+                        // no longer frozen; continue
+                        continue;
+                    }
+                    int pos = pos_of_team[chosen_team];
 
                     // Apply unfreeze for this problem
                     auto &team = S.teams[chosen_team];
@@ -239,36 +258,39 @@ int main(){
                     for(auto &ev : ps.frozen_events){
                         if(accept_time==-1 && ev.first=="Accepted"){
                             accept_time = ev.second;
-                            break; // first AC stops
+                            break;
                         } else if(accept_time==-1){
                             wrong_added++;
                         }
                     }
                     ps.wrong_before += wrong_added;
-                    if(!ps.solved && accept_time!=-1){
-                        ps.solved = true;
-                        ps.solve_time = accept_time;
-                    }
-                    // Clear frozen flags for this problem
+                    if(!ps.solved && accept_time!=-1){ ps.solved=true; ps.solve_time=accept_time; }
                     ps.frozen_events.clear();
                     ps.is_frozen = false;
-
-                    // Recompute this team's aggregates only (others unchanged)
                     recompute_team(team, S.M);
 
-                    // New order and detect movements upward; others maintain relative order
-                    auto new_order = order_by_rank(S);
-                    int new_pos = find(new_order.begin(), new_order.end(), chosen_team) - new_order.begin();
-                    if(new_pos < old_pos){
-                        // Output a line for each position ascended, from old_pos-1 down to new_pos
-                        for(int p = old_pos-1; p>=new_pos; --p){
-                            int replaced_team_idx = current_order[p];
-                            cout << team.name << ' ' << S.teams[replaced_team_idx].name << ' '
-                                 << team.solved_count << ' ' << team.penalty << "\n";
+                    // Bubble up chosen_team while it outranks predecessor
+                    while(pos>0 && rank_cmp_idx(chosen_team, current_order[pos-1], S.teams)){
+                        int neighbor = current_order[pos-1];
+                        int neighbor_old_pos = pos-1;
+                        // Output one ranking change line for this overtake
+                        cout << team.name << ' ' << S.teams[neighbor].name << ' ' << team.solved_count << ' ' << team.penalty << "\n";
+                        // swap in order
+                        swap(current_order[pos], current_order[pos-1]);
+                        pos_of_team[chosen_team] = neighbor_old_pos;
+                        pos_of_team[neighbor] = neighbor_old_pos+1;
+                        pos--;
+                        // update neighbor in set if it has frozen problems
+                        if(in_set[neighbor]){
+                            frozen_set.erase(Node{neighbor_old_pos, neighbor});
+                            frozen_set.insert(Node{neighbor_old_pos+1, neighbor});
                         }
                     }
-                    // Update current order for next selection
-                    current_order = move(new_order);
+                    // Reinsert chosen_team if it still has other frozen problems
+                    if(has_frozen(chosen_team)){
+                        frozen_set.insert(Node{pos_of_team[chosen_team], chosen_team});
+                        in_set[chosen_team]=1;
+                    }
                 }
 
                 // Output scoreboard after scrolling (no additional flush per spec)
